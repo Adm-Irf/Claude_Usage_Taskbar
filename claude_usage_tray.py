@@ -653,6 +653,7 @@ class SetupDialog(QtWidgets.QDialog):
         super().__init__()
         self.original_exe = original_exe
         self.install_exe = install_exe
+        self._fetcher = None
 
         self.setWindowTitle("Claude Usage Tray — Setup")
         self.setWindowFlag(QtCore.Qt.WindowType.WindowContextHelpButtonHint, False)
@@ -667,9 +668,9 @@ class SetupDialog(QtWidgets.QDialog):
         title.setStyleSheet(f"color:{COLOR_TEXT}; font-size:16px; font-weight:700;")
         lay.addWidget(title)
 
-        self.step1 = QtWidgets.QLabel("Installing…")
-        self.step1.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
-        lay.addWidget(self.step1)
+        self.step_install = QtWidgets.QLabel("Installing…")
+        self.step_install.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        lay.addWidget(self.step_install)
 
         self.path_label = QtWidgets.QLabel("")
         self.path_label.setWordWrap(True)
@@ -683,6 +684,25 @@ class SetupDialog(QtWidgets.QDialog):
         self.cleanup_label.hide()
         lay.addWidget(self.cleanup_label)
 
+        self.step_connect = QtWidgets.QLabel("")
+        self.step_connect.setWordWrap(True)
+        self.step_connect.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        self.step_connect.hide()
+        lay.addWidget(self.step_connect)
+
+        bottom = QtWidgets.QHBoxLayout()
+        self.retry_btn = QtWidgets.QPushButton("Retry")
+        self.retry_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.retry_btn.setStyleSheet(
+            f"QPushButton{{color:{COLOR_TEXT}; background:#2a2d34; border:1px solid #3a3f47;"
+            f" border-radius:6px; font-size:12px; font-weight:600; padding:8px 14px;}}"
+            f"QPushButton:hover{{background:#3a3f47;}}"
+        )
+        self.retry_btn.clicked.connect(self._try_connect)
+        self.retry_btn.hide()
+        bottom.addWidget(self.retry_btn)
+        bottom.addStretch(1)
+
         self.done_btn = QtWidgets.QPushButton("Done")
         self.done_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.done_btn.setStyleSheet(
@@ -692,7 +712,8 @@ class SetupDialog(QtWidgets.QDialog):
         )
         self.done_btn.clicked.connect(self.accept)
         self.done_btn.hide()
-        lay.addWidget(self.done_btn, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+        bottom.addWidget(self.done_btn)
+        lay.addLayout(bottom)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -702,12 +723,37 @@ class SetupDialog(QtWidgets.QDialog):
         install_dir = os.path.dirname(self.install_exe)
         os.makedirs(install_dir, exist_ok=True)
         shutil.copyfile(self.original_exe, self.install_exe)
-        self.step1.setText("✓  Installed")
-        self.step1.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
+        self.step_install.setText("✓  Installed")
+        self.step_install.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
         self.path_label.setText(f"Stored at:  {install_dir}")
         self.path_label.show()
         self.cleanup_label.setText(f"You can now delete the downloaded file:\n{self.original_exe}")
         self.cleanup_label.show()
+        self.step_connect.setText("Connecting to Claude…")
+        self.step_connect.show()
+        self.adjustSize()
+        self._try_connect()
+
+    def _try_connect(self):
+        self.retry_btn.hide()
+        self.done_btn.hide()
+        self.step_connect.setText("Connecting to Claude…")
+        self.step_connect.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        token, org_id = get_credentials()
+        self._fetcher = Fetcher(token, org_id)
+        self._fetcher.finished_result.connect(self._on_connect_result)
+        self._fetcher.start()
+
+    def _on_connect_result(self, result):
+        if result.get("ok"):
+            label = result.get("account_label", "Claude")
+            self.step_connect.setText(f"✓  Connected — {label}")
+            self.step_connect.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
+        else:
+            err = result.get("error", "Failed to connect")
+            self.step_connect.setText(f"✗  {err}")
+            self.step_connect.setStyleSheet(f"color:{COLOR_HIGH}; font-size:11px;")
+            self.retry_btn.show()
         self.done_btn.show()
         self.adjustSize()
 
