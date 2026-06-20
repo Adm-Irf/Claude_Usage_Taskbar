@@ -133,7 +133,7 @@ Start-Process pythonw claude_usage_tray.py
 
 The tray icon appears and PowerShell can be closed — the app keeps running independently. (`pythonw` runs without a console window; `Start-Process` detaches it from the terminal.)
 
-**4. Make it start on login (optional)**
+**4. Make it start on login**
 
 Paste this into the same PowerShell window (must be inside the `Claude-Usage-Tray` folder):
 
