@@ -18,6 +18,8 @@ Click the tray icon → a panel pops up with usage bars, percentages, and reset 
 
 > **Windows SmartScreen warning?** Click **More info → Run anyway**. This is a one-time prompt because the exe is unsigned. Once installed, the app runs without warnings.
 
+> **Antivirus blocking the exe?** If Kaspersky, Defender, or any AV quarantines the file, skip this section and follow the [**Run from source**](#antivirus-blocking-the-exe-run-from-source-instead) guide at the bottom instead.
+
 ---
 
 ## Authentication
