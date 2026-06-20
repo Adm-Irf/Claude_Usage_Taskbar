@@ -110,29 +110,49 @@ def save_config(cfg: dict) -> None:
 # --------------------------------------------------------------------------- #
 # Data fetching
 # --------------------------------------------------------------------------- #
+def _read_claude_code_credentials():
+    """Read OAuth token + org_id from Claude Code's credentials file if present."""
+    creds_path = os.path.join(os.path.expanduser("~"), ".claude", ".credentials.json")
+    try:
+        with open(creds_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        token = (data.get("claudeAiOauth") or {}).get("accessToken", "").strip()
+        org_id = data.get("organizationUuid", "").strip()
+        if token:
+            return token, org_id
+    except Exception:
+        pass
+    return None, None
+
+
 def get_session_key(cfg: dict):
-    """Prefer the configured key, otherwise try reading it from a browser."""
+    """Return (key, org_id). Checks config, Claude Code creds, then browser cookies."""
     key = (cfg.get("session_key") or "").strip()
     if key:
-        return key
+        return key, (cfg.get("org_id") or "").strip()
+
+    # Zero-config: read from Claude Code credentials file
+    token, org_id = _read_claude_code_credentials()
+    if token:
+        return token, org_id
+
+    # Fallback: try reading browser cookies
     try:
         import browser_cookie3 as bc
     except ImportError:
-        return None
-    loaders = []
+        return None, ""
     for name in ("firefox", "chrome", "edge", "brave", "chromium", "opera"):
-        loaders.append(getattr(bc, name, None))
-    for loader in loaders:
+        loader = getattr(bc, name, None)
         if loader is None:
             continue
         try:
             cj = loader(domain_name="claude.ai")
             for c in cj:
                 if c.name == "sessionKey" and c.value:
-                    return c.value
+                    return c.value, ""
         except Exception:
             continue
-    return None
+    return None, ""
 
 
 def _first(d: dict, keys):
@@ -172,24 +192,40 @@ def _pick_org(orgs):
 
 
 def fetch_usage(session_key: str, org_id: str = ""):
-    """Return (normalised_usage_dict, org_id). Raises on failure."""
-    s = requests.Session()
-    s.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
-    cookies = {"sessionKey": session_key}
+    """Return (normalised_usage_dict, org_id). Raises on failure.
 
-    if not org_id:
-        r = s.get(f"{BASE}/organizations", cookies=cookies, timeout=REQUEST_TIMEOUT)
+    OAuth tokens (sk-ant-oat01-, from Claude Code) use the Anthropic OAuth
+    usage endpoint. Session cookies (sk-ant-sid01-) use the claude.ai web API.
+    """
+    s = requests.Session()
+    s.headers.update({"Accept": "application/json"})
+
+    if session_key.startswith("sk-ant-oat"):
+        s.headers.update({
+            "Authorization": f"Bearer {session_key}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/1.0.0",
+        })
+        r = s.get("https://api.anthropic.com/api/oauth/usage", timeout=REQUEST_TIMEOUT)
+        if r.status_code in (401, 403):
+            raise RuntimeError("Not authorised — your OAuth token is missing or expired.")
+        r.raise_for_status()
+        data = r.json()
+    else:
+        s.headers["User-Agent"] = USER_AGENT
+        cookies = {"sessionKey": session_key}
+        if not org_id:
+            r = s.get(f"{BASE}/organizations", cookies=cookies, timeout=REQUEST_TIMEOUT)
+            if r.status_code in (401, 403):
+                raise RuntimeError("Not authorised — your session key is missing or expired.")
+            r.raise_for_status()
+            org_id = _pick_org(r.json())
+        r = s.get(f"{BASE}/organizations/{org_id}/usage",
+                  cookies=cookies, timeout=REQUEST_TIMEOUT)
         if r.status_code in (401, 403):
             raise RuntimeError("Not authorised — your session key is missing or expired.")
         r.raise_for_status()
-        org_id = _pick_org(r.json())
-
-    r = s.get(f"{BASE}/organizations/{org_id}/usage",
-              cookies=cookies, timeout=REQUEST_TIMEOUT)
-    if r.status_code in (401, 403):
-        raise RuntimeError("Not authorised — your session key is missing or expired.")
-    r.raise_for_status()
-    data = r.json()
+        data = r.json()
 
     usage = {
         "session": _extract(data.get("five_hour")),
@@ -211,7 +247,7 @@ class Fetcher(QtCore.QThread):
     def run(self):
         if not self.session_key:
             self.finished_result.emit(
-                {"ok": False, "error": "No session key. See config file."}
+                {"ok": False, "error": "No session key found.\nClick 'Connect Claude Account' below."}
             )
             return
         try:
@@ -367,7 +403,7 @@ class Popup(QtWidgets.QWidget):
     """Frameless panel that auto-closes when you click outside it."""
     hidden = QtCore.Signal()
 
-    def __init__(self, on_refresh):
+    def __init__(self, on_refresh, on_connect):
         super().__init__(None)
         self.setWindowFlags(
             QtCore.Qt.WindowType.Popup
@@ -376,6 +412,7 @@ class Popup(QtWidgets.QWidget):
         )
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         self._on_refresh = on_refresh
+        self._on_connect = on_connect
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)  # room for shadow
@@ -419,6 +456,17 @@ class Popup(QtWidgets.QWidget):
         self.error_label.hide()
         cl.addWidget(self.error_label)
 
+        self.connect_btn = QtWidgets.QPushButton("Connect Claude Account")
+        self.connect_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.connect_btn.setStyleSheet(
+            "QPushButton{color:#fff; background:#2563eb; border:none; border-radius:6px;"
+            " font-size:12px; font-weight:600; padding:8px 10px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+        )
+        self.connect_btn.clicked.connect(self._on_connect)
+        self.connect_btn.hide()
+        cl.addWidget(self.connect_btn)
+
         footer = QtWidgets.QHBoxLayout()
         self.updated = QtWidgets.QLabel("")
         self.updated.setStyleSheet(f"color:{COLOR_MUTED}; font-size:10px;")
@@ -435,29 +483,8 @@ class Popup(QtWidgets.QWidget):
         footer.addWidget(refresh)
         cl.addLayout(footer)
 
-        sep = QtWidgets.QFrame()
-        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #2f343c;")
-        cl.addWidget(sep)
-        self.startup_btn = QtWidgets.QPushButton("Start automatically on Windows login")
-        self.startup_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.startup_btn.setStyleSheet(
-            "QPushButton{color:%s; background:#2a2d34; border:none; border-radius:6px;"
-            " font-size:11px; font-weight:600; padding:6px 10px;}"
-            "QPushButton:hover{background:#31363f; color:%s;}" % (COLOR_MUTED, COLOR_OK)
-        )
-        self.startup_btn.clicked.connect(self._on_startup_clicked)
-        self._startup_sep = sep
-        cl.addWidget(self.startup_btn)
-
         self.setFixedWidth(300)
         self._last_ts = 0
-
-    def _on_startup_clicked(self):
-        if _startup_set():
-            self.startup_btn.hide()
-            self._startup_sep.hide()
-            self.adjustSize()
 
     def hideEvent(self, e):
         self.hidden.emit()
@@ -465,16 +492,20 @@ class Popup(QtWidgets.QWidget):
 
     def show_loading(self):
         self.error_label.hide()
+        self.connect_btn.hide()
         self.updated.setText("Loading…")
 
     def show_error(self, msg):
         self.error_label.setText(msg)
         self.error_label.show()
+        is_auth = "session key" in msg.lower() or "authoris" in msg.lower() or "authoriz" in msg.lower()
+        self.connect_btn.setVisible(is_auth)
         self.updated.setText("Failed to update")
         self.adjustSize()
 
     def show_usage(self, usage, ts):
         self.error_label.hide()
+        self.connect_btn.hide()
         self.session_row.update_metric(usage.get("session"))
         self.weekly_row.update_metric(usage.get("weekly"))
         opus = usage.get("weekly_opus")
@@ -527,13 +558,13 @@ class Controller(QtCore.QObject):
         super().__init__()
         self.app = app
         self.cfg = load_config()
-        self.session_key = get_session_key(self.cfg)
-        self.org_id = (self.cfg.get("org_id") or "").strip()
+        self.session_key, _org = get_session_key(self.cfg)
+        self.org_id = _org or (self.cfg.get("org_id") or "").strip()
         self.usage = None
         self.last_ts = 0
         self.fetcher = None
 
-        self.popup = Popup(self.manual_refresh)
+        self.popup = Popup(self.manual_refresh, self._open_auth_dialog)
         self.popup.hidden.connect(self._on_popup_hidden)
         self._last_hide = 0
 
@@ -623,8 +654,8 @@ class Controller(QtCore.QObject):
     def manual_refresh(self):
         # Re-read key in case the user just pasted it.
         self.cfg = load_config()
-        self.session_key = get_session_key(self.cfg)
-        self.org_id = (self.cfg.get("org_id") or "").strip()
+        self.session_key, _org = get_session_key(self.cfg)
+        self.org_id = _org or (self.cfg.get("org_id") or "").strip()
         if self.popup.isVisible():
             self.popup.show_loading()
         self.refresh()
@@ -653,6 +684,8 @@ class Controller(QtCore.QObject):
             self.tray.setToolTip(
                 f"Claude — Session {sess_pct:.0f}% · Weekly {wk_pct:.0f}%"
             )
+            if not _startup_is_set():
+                _startup_set()
             if self.popup.isVisible():
                 self.popup.show_usage(self.usage, self.last_ts)
         else:
@@ -667,24 +700,221 @@ class Controller(QtCore.QObject):
             if self.usage:
                 self.popup.show_usage(self.usage, self.last_ts)
 
+    def _open_auth_dialog(self):
+        self.popup.hide()
+        dlg = ConnectDialog()
+        dlg.session_found.connect(self._on_session_from_browser)
+        dlg.exec()
 
-def _self_install():
-    """If running as a frozen exe outside the install dir, copy there and relaunch."""
-    if not (getattr(sys, "frozen", False) and sys.platform.startswith("win")):
-        return
-    install_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ClaudeUsageTray")
-    install_exe = os.path.join(install_dir, "ClaudeUsageTray.exe")
-    current_exe = sys.executable
-    if os.path.normcase(os.path.abspath(current_exe)) == os.path.normcase(os.path.abspath(install_exe)):
-        return
-    os.makedirs(install_dir, exist_ok=True)
-    shutil.copyfile(current_exe, install_exe)
-    subprocess.Popen([install_exe])
-    sys.exit(0)
+    def _on_session_from_browser(self, key):
+        self.cfg["session_key"] = key
+        save_config(self.cfg)
+        self.session_key = key
+        self.org_id = ""
+        if self.popup.isVisible():
+            self.popup.show_loading()
+        self.refresh()
+
+
+# --------------------------------------------------------------------------- #
+# Connect dialog
+# --------------------------------------------------------------------------- #
+class ConnectDialog(QtWidgets.QDialog):
+    """Opens claude.ai in the user's browser, auto-reads the session cookie.
+    Falls back to a paste field if Chrome's encryption blocks auto-read."""
+    session_found = QtCore.Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Connect Claude Account")
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setFixedWidth(420)
+        self.setStyleSheet(
+            f"background:{COLOR_BG}; color:{COLOR_TEXT};"
+        )
+
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(12)
+        lay.setContentsMargins(24, 24, 24, 24)
+
+        self.status = QtWidgets.QLabel("Opening claude.ai in your browser…")
+        self.status.setWordWrap(True)
+        self.status.setStyleSheet(f"color:{COLOR_TEXT}; font-size:12px;")
+        lay.addWidget(self.status)
+
+        self.fallback_label = QtWidgets.QLabel(
+            "Could not read the session key automatically (Chrome 127+ encryption).\n\n"
+            "In Chrome: F12 → Application → Cookies → https://claude.ai → "
+            "copy the sessionKey value and paste it below."
+        )
+        self.fallback_label.setWordWrap(True)
+        self.fallback_label.setStyleSheet(f"color:{COLOR_MUTED}; font-size:11px;")
+        self.fallback_label.hide()
+        lay.addWidget(self.fallback_label)
+
+        self.key_input = QtWidgets.QLineEdit()
+        self.key_input.setPlaceholderText("sk-ant-sid01-…")
+        self.key_input.setStyleSheet(
+            f"background:#2a2d34; color:{COLOR_TEXT}; border:1px solid #3a3f47;"
+            " border-radius:6px; padding:7px 10px; font-size:11px;"
+        )
+        self.key_input.hide()
+        self.key_input.textChanged.connect(self._on_text_changed)
+        lay.addWidget(self.key_input)
+
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._try_detect)
+        self._attempts = 0
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl("https://claude.ai"))
+        self._timer.start(3000)
+
+    def _try_detect(self):
+        self._attempts += 1
+        key, _ = get_session_key({"session_key": ""})
+        if key:
+            self._timer.stop()
+            self.session_found.emit(key)
+            self.accept()
+            return
+        if self._attempts >= 5:
+            self._timer.stop()
+            self.status.setText("Couldn't detect session key automatically.")
+            self.fallback_label.show()
+            self.key_input.show()
+            self.adjustSize()
+        else:
+            self.status.setText(f"Detecting session… ({self._attempts}/5)")
+
+    def _on_text_changed(self, text):
+        text = text.strip()
+        if text.startswith("sk-ant-") and len(text) > 20:
+            self._timer.stop()
+            self.session_found.emit(text)
+            self.accept()
+
+
+# --------------------------------------------------------------------------- #
+# First-run setup dialog
+# --------------------------------------------------------------------------- #
+class SetupDialog(QtWidgets.QDialog):
+    """Shown on first run (when exe is outside install dir).
+    Copies itself, checks connection, offers to delete the downloaded file."""
+
+    def __init__(self, original_exe, install_exe):
+        super().__init__()
+        self.original_exe = original_exe
+        self.install_exe = install_exe
+        self._fetcher = None
+
+        self.setWindowTitle("Claude Usage Tray — Setup")
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setFixedWidth(460)
+        self.setStyleSheet(f"background:{COLOR_BG}; color:{COLOR_TEXT};")
+
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(14)
+        lay.setContentsMargins(28, 28, 28, 24)
+
+        title = QtWidgets.QLabel("Claude Usage Tray")
+        title.setStyleSheet(f"color:{COLOR_TEXT}; font-size:16px; font-weight:700;")
+        lay.addWidget(title)
+
+        self.step1 = QtWidgets.QLabel("Installing…")
+        self.step1.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        lay.addWidget(self.step1)
+
+        self.path_label = QtWidgets.QLabel("")
+        self.path_label.setWordWrap(True)
+        self.path_label.setStyleSheet(f"color:{COLOR_MUTED}; font-size:10px;")
+        self.path_label.hide()
+        lay.addWidget(self.path_label)
+
+        self.step2 = QtWidgets.QLabel("Connecting to claude.ai…")
+        self.step2.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        self.step2.hide()
+        lay.addWidget(self.step2)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        self.delete_btn = QtWidgets.QPushButton("Delete setup file")
+        self.delete_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.delete_btn.setStyleSheet(
+            f"QPushButton{{color:#fff; background:#2563eb; border:none; border-radius:6px;"
+            f" font-size:12px; font-weight:600; padding:8px 14px;}}"
+            f"QPushButton:hover{{background:#1d4ed8;}}"
+        )
+        self.delete_btn.clicked.connect(self._on_delete)
+        self.keep_btn = QtWidgets.QPushButton("Keep")
+        self.keep_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.keep_btn.setStyleSheet(
+            f"QPushButton{{color:{COLOR_MUTED}; background:transparent; border:none;"
+            f" font-size:12px; padding:8px 14px;}}"
+            f"QPushButton:hover{{color:{COLOR_TEXT};}}"
+        )
+        self.keep_btn.clicked.connect(self.accept)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.keep_btn)
+        btn_row.addWidget(self.delete_btn)
+        self.btn_widget = QtWidgets.QWidget()
+        self.btn_widget.setLayout(btn_row)
+        self.btn_widget.hide()
+        lay.addWidget(self.btn_widget)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QtCore.QTimer.singleShot(80, self._do_install)
+
+    def _do_install(self):
+        install_dir = os.path.dirname(self.install_exe)
+        os.makedirs(install_dir, exist_ok=True)
+        shutil.copyfile(self.original_exe, self.install_exe)
+        self.step1.setText("✓  Installed")
+        self.step1.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
+        self.path_label.setText(f"Stored at:  {install_dir}")
+        self.path_label.show()
+        self.step2.show()
+        self.adjustSize()
+        QtCore.QTimer.singleShot(80, self._do_connect)
+
+    def _do_connect(self):
+        key, org_id = get_session_key({})
+        self._fetcher = Fetcher(key or "", org_id or "")
+        self._fetcher.finished_result.connect(self._on_fetched)
+        self._fetcher.start()
+
+    def _on_fetched(self, result):
+        if result.get("ok"):
+            self.step2.setText("✓  Connected to claude.ai")
+            self.step2.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
+        else:
+            self.step2.setText("⚠  Could not connect — will retry in background")
+            self.step2.setStyleSheet(f"color:{COLOR_WARN}; font-size:12px;")
+        subprocess.Popen([self.install_exe])
+        self.btn_widget.show()
+        self.adjustSize()
+
+    def _on_delete(self):
+        subprocess.Popen(
+            f'timeout /t 3 /nobreak > nul && del /f /q "{self.original_exe}"',
+            shell=True,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+        )
+        self.accept()
 
 
 def main():
-    _self_install()
+    if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
+        install_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ClaudeUsageTray")
+        install_exe = os.path.join(install_dir, "ClaudeUsageTray.exe")
+        current_exe = sys.executable
+        if os.path.normcase(os.path.abspath(current_exe)) != os.path.normcase(os.path.abspath(install_exe)):
+            app = QtWidgets.QApplication(sys.argv)
+            dlg = SetupDialog(current_exe, install_exe)
+            dlg.exec()
+            return 0
+
     QtWidgets.QApplication.setQuitOnLastWindowClosed(False)
     app = QtWidgets.QApplication(sys.argv)
     if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
