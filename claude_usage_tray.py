@@ -547,7 +547,7 @@ class Controller(QtCore.QObject):
         w, h = self.popup.width(), self.popup.height()
         x = cursor.x() - w // 2
         x = max(avail.left() + 4, min(x, avail.right() - w - 4))
-        y = avail.bottom() - h - 4
+        y = avail.bottom() - h - 50
         self.popup.move(x, y)
         self.popup.show()
         self.popup.raise_()

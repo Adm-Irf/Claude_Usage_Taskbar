@@ -7,6 +7,8 @@ bars + percentages, with reset countdowns. Click anywhere outside → it closes.
 The tray icon itself is a ring that fills/colours with your current session
 usage (green → amber → red), so you get a glance value without even clicking.
 
+![Claude Usage Tray](Pic/Screenshot%202026-06-20%20143944.png)
+
 ---
 
 ## Setup
