@@ -447,8 +447,6 @@ class Popup(QtWidgets.QWidget):
             "QPushButton:hover{background:#31363f; color:%s;}" % (COLOR_MUTED, COLOR_OK)
         )
         self.startup_btn.clicked.connect(self._on_startup_clicked)
-        self.startup_btn.hide()
-        sep.hide()
         self._startup_sep = sep
         cl.addWidget(self.startup_btn)
 
@@ -485,9 +483,6 @@ class Popup(QtWidgets.QWidget):
             self.opus_row.update_metric(opus)
         self._last_ts = ts
         self.refresh_updated_label()
-        if not _startup_is_set():
-            self._startup_sep.show()
-            self.startup_btn.show()
         self.adjustSize()
 
     def refresh_updated_label(self):
