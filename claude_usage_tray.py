@@ -31,6 +31,8 @@ Getting your session key (two ways):
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -671,7 +673,23 @@ class Controller(QtCore.QObject):
                 self.popup.show_usage(self.usage, self.last_ts)
 
 
+def _self_install():
+    """If running as a frozen exe outside the install dir, copy there and relaunch."""
+    if not (getattr(sys, "frozen", False) and sys.platform.startswith("win")):
+        return
+    install_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ClaudeUsageTray")
+    install_exe = os.path.join(install_dir, "ClaudeUsageTray.exe")
+    current_exe = sys.executable
+    if os.path.normcase(os.path.abspath(current_exe)) == os.path.normcase(os.path.abspath(install_exe)):
+        return
+    os.makedirs(install_dir, exist_ok=True)
+    shutil.copyfile(current_exe, install_exe)
+    subprocess.Popen([install_exe])
+    sys.exit(0)
+
+
 def main():
+    _self_install()
     QtWidgets.QApplication.setQuitOnLastWindowClosed(False)
     app = QtWidgets.QApplication(sys.argv)
     if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
