@@ -126,10 +126,10 @@ pip install -r requirements.txt
 **3. Run the app**
 
 ```
-python claude_usage_tray.py
+Start-Process pythonw claude_usage_tray.py
 ```
 
-The tray icon appears. The app does not install itself when running from source — it just starts directly.
+The tray icon appears and PowerShell can be closed — the app keeps running independently. (`pythonw` runs without a console window; `Start-Process` detaches it from the terminal.)
 
 **4. Make it start on login (optional)**
 
