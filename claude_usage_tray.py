@@ -10,6 +10,7 @@ Authentication (automatic, no setup needed):
 
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -645,9 +646,143 @@ class Controller(QtCore.QObject):
 
 
 # --------------------------------------------------------------------------- #
+# First-run setup dialog
+# --------------------------------------------------------------------------- #
+class SetupDialog(QtWidgets.QDialog):
+    """Copies the exe to AppData on first run (strips Zone.Identifier),
+    then tests the Claude connection."""
+
+    def __init__(self, original_exe, install_exe):
+        super().__init__()
+        self.original_exe = original_exe
+        self.install_exe = install_exe
+        self._fetcher = None
+
+        self.setWindowTitle("Claude Usage Tray — Setup")
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setFixedWidth(460)
+        self.setStyleSheet(f"background:{COLOR_BG}; color:{COLOR_TEXT};")
+
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(14)
+        lay.setContentsMargins(28, 28, 28, 24)
+
+        title = QtWidgets.QLabel("Claude Usage Tray")
+        title.setStyleSheet(f"color:{COLOR_TEXT}; font-size:16px; font-weight:700;")
+        lay.addWidget(title)
+
+        self.step_install = QtWidgets.QLabel("Installing…")
+        self.step_install.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        lay.addWidget(self.step_install)
+
+        self.path_label = QtWidgets.QLabel("")
+        self.path_label.setWordWrap(True)
+        self.path_label.setStyleSheet(f"color:{COLOR_MUTED}; font-size:10px;")
+        self.path_label.hide()
+        lay.addWidget(self.path_label)
+
+        self.cleanup_label = QtWidgets.QLabel("")
+        self.cleanup_label.setWordWrap(True)
+        self.cleanup_label.setStyleSheet(f"color:{COLOR_MUTED}; font-size:10px;")
+        self.cleanup_label.hide()
+        lay.addWidget(self.cleanup_label)
+
+        self.step_connect = QtWidgets.QLabel("")
+        self.step_connect.setWordWrap(True)
+        self.step_connect.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        self.step_connect.hide()
+        lay.addWidget(self.step_connect)
+
+        bottom = QtWidgets.QHBoxLayout()
+        self.retry_btn = QtWidgets.QPushButton("Retry")
+        self.retry_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.retry_btn.setStyleSheet(
+            f"QPushButton{{color:{COLOR_TEXT}; background:#2a2d34; border:1px solid #3a3f47;"
+            f" border-radius:6px; font-size:12px; font-weight:600; padding:8px 14px;}}"
+            f"QPushButton:hover{{background:#3a3f47;}}"
+        )
+        self.retry_btn.clicked.connect(self._try_connect)
+        self.retry_btn.hide()
+        bottom.addWidget(self.retry_btn)
+        bottom.addStretch(1)
+
+        self.done_btn = QtWidgets.QPushButton("Done")
+        self.done_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.done_btn.setStyleSheet(
+            f"QPushButton{{color:#fff; background:#2563eb; border:none; border-radius:6px;"
+            f" font-size:12px; font-weight:600; padding:8px 14px;}}"
+            f"QPushButton:hover{{background:#1d4ed8;}}"
+        )
+        self.done_btn.clicked.connect(self.accept)
+        self.done_btn.hide()
+        bottom.addWidget(self.done_btn)
+        lay.addLayout(bottom)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QtCore.QTimer.singleShot(80, self._do_install)
+
+    def _do_install(self):
+        install_dir = os.path.dirname(self.install_exe)
+        os.makedirs(install_dir, exist_ok=True)
+        shutil.copyfile(self.original_exe, self.install_exe)
+        # Remove Zone.Identifier ADS — strips the "downloaded from internet" mark
+        # so the installed copy is treated as a local trusted file.
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+                ctypes.windll.kernel32.DeleteFileW(self.install_exe + ":Zone.Identifier")
+            except Exception:
+                pass
+        self.step_install.setText("✓  Installed")
+        self.step_install.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
+        self.path_label.setText(f"Stored at:  {install_dir}")
+        self.path_label.show()
+        self.cleanup_label.setText(f"You can now delete the downloaded file:\n{self.original_exe}")
+        self.cleanup_label.show()
+        self.step_connect.setText("Connecting to Claude…")
+        self.step_connect.show()
+        self.adjustSize()
+        self._try_connect()
+
+    def _try_connect(self):
+        self.retry_btn.hide()
+        self.done_btn.hide()
+        self.step_connect.setText("Connecting to Claude…")
+        self.step_connect.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
+        token, org_id = get_credentials()
+        self._fetcher = Fetcher(token, org_id)
+        self._fetcher.finished_result.connect(self._on_connect_result)
+        self._fetcher.start()
+
+    def _on_connect_result(self, result):
+        if result.get("ok"):
+            label = result.get("account_label", "Claude")
+            self.step_connect.setText(f"✓  Connected — {label}")
+            self.step_connect.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
+        else:
+            err = result.get("error", "Failed to connect")
+            self.step_connect.setText(f"✗  {err}")
+            self.step_connect.setStyleSheet(f"color:{COLOR_HIGH}; font-size:11px;")
+            self.retry_btn.show()
+        self.done_btn.show()
+        self.adjustSize()
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 def main():
+    if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
+        install_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "ClaudeUsageTray")
+        install_exe = os.path.join(install_dir, "ClaudeUsageTray.exe")
+        current_exe = sys.executable
+        if os.path.normcase(os.path.abspath(current_exe)) != os.path.normcase(os.path.abspath(install_exe)):
+            app = QtWidgets.QApplication(sys.argv)
+            dlg = SetupDialog(current_exe, install_exe)
+            dlg.exec()
+            return 0
+
     if sys.platform.startswith("win") and _winreg is not None:
         import ctypes
         _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "ClaudeUsageTray_SingleInstance")
