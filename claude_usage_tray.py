@@ -201,6 +201,8 @@ def _http_get(url: str, headers: dict, timeout: int) -> dict:
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise RuntimeError("Not authorised — your token is missing or expired.")
+        if e.code == 429:
+            raise RuntimeError("Rate limited by Claude — too many requests. Will retry automatically.")
         raise RuntimeError(f"HTTP {e.code}: {e.reason}")
 
 
@@ -690,6 +692,7 @@ class Controller(QtCore.QObject):
             self.tray.setToolTip(
                 f"Claude — Session {sess_pct:.0f}% · Weekly {wk_pct:.0f}%"
             )
+            self.refresh_timer.setInterval(REFRESH_SECONDS * 1000)
             if not _startup_is_set():
                 _startup_set()
             if self.popup.isVisible():
@@ -699,6 +702,10 @@ class Controller(QtCore.QObject):
             self.tray.setToolTip(f"Claude Usage — {err}")
             if self.popup.isVisible():
                 self.popup.show_error(err)
+            if "rate limited" in err.lower():
+                self.refresh_timer.setInterval(10 * 60 * 1000)
+            else:
+                self.refresh_timer.setInterval(REFRESH_SECONDS * 1000)
 
     def _tick(self):
         if self.popup.isVisible():
