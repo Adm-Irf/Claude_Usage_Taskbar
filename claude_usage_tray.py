@@ -769,12 +769,12 @@ class Controller(QtCore.QObject):
                 self.popup.show_usage(self.usage, self.last_ts)
 
     def _switch_account(self):
-        """Clear saved session key and prompt to connect a different account."""
+        """Clear saved session key and always prompt to connect a different account."""
         self.cfg["session_key"] = ""
         self.cfg["org_id"] = ""
         save_config(self.cfg)
-        self.session_key, _org = get_session_key(self.cfg)
-        self.org_id = _org or ""
+        self.session_key = ""
+        self.org_id = ""
         self.account_name = ""
         self.usage = None
         self.last_ts = 0
@@ -784,13 +784,14 @@ class Controller(QtCore.QObject):
         self.tray.setToolTip("Claude Usage — loading…")
         self.popup.set_account("")
         self.popup.hide()
-        # If Claude Code credentials are still present, just refresh with them
-        if self.session_key:
+        dlg = ConnectDialog()
+        dlg.session_found.connect(self._on_session_from_browser)
+        dlg.exec()
+        # If dialog closed without a key (user cancelled), fall back to Claude Code
+        if not self.session_key:
+            self.session_key, _org = get_session_key(self.cfg)
+            self.org_id = _org or ""
             QtCore.QTimer.singleShot(200, self.refresh)
-        else:
-            dlg = ConnectDialog()
-            dlg.session_found.connect(self._on_session_from_browser)
-            dlg.exec()
 
     def _open_auth_dialog(self):
         self.popup.hide()
