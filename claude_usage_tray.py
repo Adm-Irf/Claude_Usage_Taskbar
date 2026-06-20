@@ -202,7 +202,9 @@ def _http_get(url: str, headers: dict, timeout: int) -> dict:
         if e.code in (401, 403):
             raise RuntimeError("Not authorised — your token is missing or expired.")
         if e.code == 429:
-            raise RuntimeError("Rate limited by Claude — too many requests. Will retry automatically.")
+            retry_after = e.headers.get("Retry-After") or e.headers.get("retry-after")
+            wait = f" Retry in {retry_after}s." if retry_after else ""
+            raise RuntimeError(f"Rate limited by Claude — too many requests.{wait} Will retry automatically.")
         raise RuntimeError(f"HTTP {e.code}: {e.reason}")
 
 
