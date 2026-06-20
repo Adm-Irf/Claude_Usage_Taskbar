@@ -57,6 +57,7 @@ BASE = "https://claude.ai/api"
 REFRESH_SECONDS = 300          # auto-refresh interval
 STALE_SECONDS = 60             # re-fetch on open if data older than this
 REQUEST_TIMEOUT = 15
+MIN_MANUAL_INTERVAL = 30       # minimum seconds between manual refreshes
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -586,6 +587,7 @@ class Controller(QtCore.QObject):
         self.last_ts = 0
         self.fetcher = None
         self._rate_limited_until = 0
+        self._last_manual_refresh = 0
 
         self.popup = Popup(self.manual_refresh, self._open_auth_dialog)
         self.popup.hidden.connect(self._on_popup_hidden)
@@ -688,6 +690,13 @@ class Controller(QtCore.QObject):
                     f"Rate limited by Claude — cooldown active.\nRetry available in {wait}."
                 )
             return
+        since_last = time.time() - self._last_manual_refresh
+        if since_last < MIN_MANUAL_INTERVAL:
+            wait = int(MIN_MANUAL_INTERVAL - since_last)
+            if self.popup.isVisible():
+                self.popup.show_error(f"Please wait {wait}s before refreshing again.")
+            return
+        self._last_manual_refresh = time.time()
         if self.popup.isVisible():
             self.popup.show_loading()
         self.refresh()
