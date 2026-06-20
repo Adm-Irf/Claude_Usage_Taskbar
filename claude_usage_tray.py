@@ -11,7 +11,6 @@ Authentication (automatic, no setup needed):
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -709,7 +708,6 @@ class SetupDialog(QtWidgets.QDialog):
         self.path_label.show()
         self.cleanup_label.setText(f"You can now delete the downloaded file:\n{self.original_exe}")
         self.cleanup_label.show()
-        subprocess.Popen([self.install_exe])
         self.done_btn.show()
         self.adjustSize()
 
