@@ -8,15 +8,29 @@ Click the tray icon → a panel pops up with usage bars, percentages, and reset 
 
 ---
 
-## Download & Run
+## Download & Install
 
 1. Go to the [**Releases**](../../releases/latest) page and download `ClaudeUsageTray.exe`.
 2. Double-click it from anywhere (Downloads, Desktop, wherever).
-3. A setup window appears — it installs itself, connects to your Claude account, and shows where it stored itself.
-4. Click **"Delete setup file"** to remove the downloaded file, or **Keep** to close.
+3. A setup window appears — it installs itself to `%LOCALAPPDATA%\Programs\ClaudeUsageTray\`, connects to your Claude account, and shows you the path of the downloaded file.
+4. Click **Done**, then manually delete the downloaded file.
 5. The ring icon appears in your system tray (bottom-right, expand `^` if hidden).
 
-You can delete the downloaded file after running it — the app copies itself to `%LOCALAPPDATA%\Programs\ClaudeUsageTray\` automatically.
+---
+
+## Storage
+
+| What | Size | When |
+|---|---|---|
+| Installed exe | ~30 MB | Permanent — lives in `%LOCALAPPDATA%\Programs\ClaudeUsageTray\` |
+| Temp files | ~73 MB | While running only — PyInstaller unpacks to `%TEMP%`, auto-deleted on exit |
+| Config | < 1 KB | Permanent — lives in `%APPDATA%\ClaudeUsageTray\` |
+
+**After you delete the downloaded file:** only the ~30 MB installed exe remains on disk. Temp files appear when the app starts and are automatically cleaned up when it exits (or on next Windows startup if it was force-killed).
+
+The ~30 MB is the irreducible minimum for a Python app with a Qt UI — it bundles the Qt6 rendering library (~26 MB) and the Python runtime (~7 MB) so no separate install is needed.
+
+To fully uninstall: delete `%LOCALAPPDATA%\Programs\ClaudeUsageTray\` and `%APPDATA%\ClaudeUsageTray\`, and remove the startup entry in Task Manager → Startup apps.
 
 ---
 
@@ -73,5 +87,5 @@ To repackage as an exe:
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconsole --onefile --name ClaudeUsageTray claude_usage_tray.py
+pyinstaller ClaudeUsageTray.spec
 ```

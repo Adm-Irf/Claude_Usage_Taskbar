@@ -37,7 +37,9 @@ import sys
 import time
 from datetime import datetime, timezone
 
-import requests
+import ssl
+import urllib.error
+import urllib.request
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -45,7 +47,6 @@ try:
     import winreg as _winreg
 except ImportError:
     _winreg = None
-
 
 
 # --------------------------------------------------------------------------- #
@@ -191,41 +192,46 @@ def _pick_org(orgs):
     return orgs[0].get("uuid")
 
 
+def _http_get(url: str, headers: dict, timeout: int) -> dict:
+    ctx = ssl.create_default_context()
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise RuntimeError("Not authorised — your token is missing or expired.")
+        raise RuntimeError(f"HTTP {e.code}: {e.reason}")
+
+
 def fetch_usage(session_key: str, org_id: str = ""):
     """Return (normalised_usage_dict, org_id). Raises on failure.
 
     OAuth tokens (sk-ant-oat01-, from Claude Code) use the Anthropic OAuth
     usage endpoint. Session cookies (sk-ant-sid01-) use the claude.ai web API.
     """
-    s = requests.Session()
-    s.headers.update({"Accept": "application/json"})
-
     if session_key.startswith("sk-ant-oat"):
-        s.headers.update({
+        headers = {
+            "Accept": "application/json",
             "Authorization": f"Bearer {session_key}",
             "anthropic-beta": "oauth-2025-04-20",
             "User-Agent": "claude-code/1.0.0",
-        })
-        r = s.get("https://api.anthropic.com/api/oauth/usage", timeout=REQUEST_TIMEOUT)
-        if r.status_code in (401, 403):
-            raise RuntimeError("Not authorised — your OAuth token is missing or expired.")
-        r.raise_for_status()
-        data = r.json()
+        }
+        data = _http_get(
+            "https://api.anthropic.com/api/oauth/usage", headers, REQUEST_TIMEOUT
+        )
     else:
-        s.headers["User-Agent"] = USER_AGENT
-        cookies = {"sessionKey": session_key}
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            "Cookie": f"sessionKey={session_key}",
+        }
         if not org_id:
-            r = s.get(f"{BASE}/organizations", cookies=cookies, timeout=REQUEST_TIMEOUT)
-            if r.status_code in (401, 403):
-                raise RuntimeError("Not authorised — your session key is missing or expired.")
-            r.raise_for_status()
-            org_id = _pick_org(r.json())
-        r = s.get(f"{BASE}/organizations/{org_id}/usage",
-                  cookies=cookies, timeout=REQUEST_TIMEOUT)
-        if r.status_code in (401, 403):
-            raise RuntimeError("Not authorised — your session key is missing or expired.")
-        r.raise_for_status()
-        data = r.json()
+            orgs = _http_get(f"{BASE}/organizations", headers, REQUEST_TIMEOUT)
+            org_id = _pick_org(orgs)
+        data = _http_get(
+            f"{BASE}/organizations/{org_id}/usage", headers, REQUEST_TIMEOUT
+        )
 
     usage = {
         "session": _extract(data.get("five_hour")),
@@ -800,8 +806,7 @@ class ConnectDialog(QtWidgets.QDialog):
 # First-run setup dialog
 # --------------------------------------------------------------------------- #
 class SetupDialog(QtWidgets.QDialog):
-    """Shown on first run (when exe is outside install dir).
-    Copies itself, checks connection, offers to delete the downloaded file."""
+    """Shown on first run (when exe is outside install dir). Copies itself to AppData."""
 
     def __init__(self, original_exe, install_exe):
         super().__init__()
@@ -837,30 +842,22 @@ class SetupDialog(QtWidgets.QDialog):
         self.step2.hide()
         lay.addWidget(self.step2)
 
-        btn_row = QtWidgets.QHBoxLayout()
-        self.delete_btn = QtWidgets.QPushButton("Delete setup file")
-        self.delete_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.delete_btn.setStyleSheet(
+        self.cleanup_label = QtWidgets.QLabel("")
+        self.cleanup_label.setWordWrap(True)
+        self.cleanup_label.setStyleSheet(f"color:{COLOR_MUTED}; font-size:10px;")
+        self.cleanup_label.hide()
+        lay.addWidget(self.cleanup_label)
+
+        self.done_btn = QtWidgets.QPushButton("Done")
+        self.done_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.done_btn.setStyleSheet(
             f"QPushButton{{color:#fff; background:#2563eb; border:none; border-radius:6px;"
             f" font-size:12px; font-weight:600; padding:8px 14px;}}"
             f"QPushButton:hover{{background:#1d4ed8;}}"
         )
-        self.delete_btn.clicked.connect(self._on_delete)
-        self.keep_btn = QtWidgets.QPushButton("Keep")
-        self.keep_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.keep_btn.setStyleSheet(
-            f"QPushButton{{color:{COLOR_MUTED}; background:transparent; border:none;"
-            f" font-size:12px; padding:8px 14px;}}"
-            f"QPushButton:hover{{color:{COLOR_TEXT};}}"
-        )
-        self.keep_btn.clicked.connect(self.accept)
-        btn_row.addStretch(1)
-        btn_row.addWidget(self.keep_btn)
-        btn_row.addWidget(self.delete_btn)
-        self.btn_widget = QtWidgets.QWidget()
-        self.btn_widget.setLayout(btn_row)
-        self.btn_widget.hide()
-        lay.addWidget(self.btn_widget)
+        self.done_btn.clicked.connect(self.accept)
+        self.done_btn.hide()
+        lay.addWidget(self.done_btn, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -892,16 +889,12 @@ class SetupDialog(QtWidgets.QDialog):
             self.step2.setText("⚠  Could not connect — will retry in background")
             self.step2.setStyleSheet(f"color:{COLOR_WARN}; font-size:12px;")
         subprocess.Popen([self.install_exe])
-        self.btn_widget.show()
-        self.adjustSize()
-
-    def _on_delete(self):
-        subprocess.Popen(
-            f'timeout /t 3 /nobreak > nul && del /f /q "{self.original_exe}"',
-            shell=True,
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+        self.cleanup_label.setText(
+            f"Setup complete. You can delete the downloaded file:\n{self.original_exe}"
         )
-        self.accept()
+        self.cleanup_label.show()
+        self.done_btn.show()
+        self.adjustSize()
 
 
 def main():
@@ -913,6 +906,13 @@ def main():
             app = QtWidgets.QApplication(sys.argv)
             dlg = SetupDialog(current_exe, install_exe)
             dlg.exec()
+            return 0
+
+    # Single-instance guard
+    if sys.platform.startswith("win") and _winreg is not None:
+        import ctypes
+        _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "ClaudeUsageTray_SingleInstance")
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             return 0
 
     QtWidgets.QApplication.setQuitOnLastWindowClosed(False)
