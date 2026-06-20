@@ -192,6 +192,13 @@ def _pick_org(orgs):
     return orgs[0].get("uuid")
 
 
+class RateLimitedError(Exception):
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+        wait = f" Retry in {retry_after}s." if retry_after else ""
+        super().__init__(f"Rate limited by Claude — too many requests.{wait} Will retry automatically.")
+
+
 def _http_get(url: str, headers: dict, timeout: int) -> dict:
     ctx = ssl.create_default_context()
     req = urllib.request.Request(url, headers=headers)
@@ -202,9 +209,12 @@ def _http_get(url: str, headers: dict, timeout: int) -> dict:
         if e.code in (401, 403):
             raise RuntimeError("Not authorised — your token is missing or expired.")
         if e.code == 429:
-            retry_after = e.headers.get("Retry-After") or e.headers.get("retry-after")
-            wait = f" Retry in {retry_after}s." if retry_after else ""
-            raise RuntimeError(f"Rate limited by Claude — too many requests.{wait} Will retry automatically.")
+            raw = e.headers.get("Retry-After") or e.headers.get("retry-after") or "0"
+            try:
+                secs = int(raw)
+            except ValueError:
+                secs = 0
+            raise RateLimitedError(secs)
         raise RuntimeError(f"HTTP {e.code}: {e.reason}")
 
 
@@ -263,6 +273,8 @@ class Fetcher(QtCore.QThread):
         try:
             usage, org_id = fetch_usage(self.session_key, self.org_id)
             self.finished_result.emit({"ok": True, "usage": usage, "org_id": org_id})
+        except RateLimitedError as e:
+            self.finished_result.emit({"ok": False, "error": str(e), "retry_after": e.retry_after})
         except Exception as e:  # noqa: BLE001
             self.finished_result.emit({"ok": False, "error": str(e)})
 
@@ -573,6 +585,7 @@ class Controller(QtCore.QObject):
         self.usage = None
         self.last_ts = 0
         self.fetcher = None
+        self._rate_limited_until = 0
 
         self.popup = Popup(self.manual_refresh, self._open_auth_dialog)
         self.popup.hidden.connect(self._on_popup_hidden)
@@ -666,6 +679,15 @@ class Controller(QtCore.QObject):
         self.cfg = load_config()
         self.session_key, _org = get_session_key(self.cfg)
         self.org_id = _org or (self.cfg.get("org_id") or "").strip()
+        remaining = int(self._rate_limited_until - time.time())
+        if remaining > 0:
+            if self.popup.isVisible():
+                mins, secs = divmod(remaining, 60)
+                wait = f"{mins}m {secs}s" if mins else f"{secs}s"
+                self.popup.show_error(
+                    f"Rate limited by Claude — cooldown active.\nRetry available in {wait}."
+                )
+            return
         if self.popup.isVisible():
             self.popup.show_loading()
         self.refresh()
@@ -673,12 +695,15 @@ class Controller(QtCore.QObject):
     def refresh(self):
         if self.fetcher and self.fetcher.isRunning():
             return
+        if time.time() < self._rate_limited_until:
+            return
         self.fetcher = Fetcher(self.session_key, self.org_id)
         self.fetcher.finished_result.connect(self._on_fetched)
         self.fetcher.start()
 
     def _on_fetched(self, result):
         if result.get("ok"):
+            self._rate_limited_until = 0
             self.usage = result["usage"]
             self.last_ts = time.time()
             new_org = result.get("org_id")
@@ -705,7 +730,14 @@ class Controller(QtCore.QObject):
             if self.popup.isVisible():
                 self.popup.show_error(err)
             if "rate limited" in err.lower():
-                self.refresh_timer.setInterval(10 * 60 * 1000)
+                retry_after = result.get("retry_after", 0)
+                if retry_after > 0:
+                    self._rate_limited_until = time.time() + retry_after
+                    # One-shot timer fires exactly when cooldown expires
+                    QtCore.QTimer.singleShot(retry_after * 1000, self.refresh)
+                    self.refresh_timer.setInterval(max(retry_after + 30, 10 * 60) * 1000)
+                else:
+                    self.refresh_timer.setInterval(10 * 60 * 1000)
             else:
                 self.refresh_timer.setInterval(REFRESH_SECONDS * 1000)
 
