@@ -781,6 +781,8 @@ def main():
             app = QtWidgets.QApplication(sys.argv)
             dlg = SetupDialog(current_exe, install_exe)
             dlg.exec()
+            if os.path.exists(install_exe):
+                os.startfile(install_exe)
             return 0
 
     if sys.platform.startswith("win") and _winreg is not None:
