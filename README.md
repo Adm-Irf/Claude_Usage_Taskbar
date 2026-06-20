@@ -106,18 +106,18 @@ If your antivirus quarantines or blocks the exe, you can run the app directly fr
 
 **1. Get the code**
 
-Open a terminal (Win + R → `cmd`) and run:
+Open **PowerShell** (Win + R → type `powershell` → Enter) and run:
 
 ```
 git clone https://github.com/Adm-irf/Claude-Usage-Tray.git
 cd Claude-Usage-Tray
 ```
 
-Or click the green **Code** button on GitHub → **Download ZIP**, then extract it.
+Or click the green **Code** button on GitHub → **Download ZIP**, extract it, then `cd` into the folder.
 
 **2. Install dependencies**
 
-In the same terminal (inside the `Claude-Usage-Tray` folder):
+In the same PowerShell window (inside the `Claude-Usage-Tray` folder):
 
 ```
 pip install -r requirements.txt
@@ -133,8 +133,10 @@ The tray icon appears. The app does not install itself when running from source 
 
 **4. Make it start on login (optional)**
 
-Create a shortcut to `pythonw claude_usage_tray.py` (using `pythonw` so no console window opens) and place it in:
+Paste this into the same PowerShell window (must be inside the `Claude-Usage-Tray` folder):
 
+```powershell
+$ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\ClaudeUsageTray.lnk"); $sc.TargetPath = (Get-Command pythonw).Source; $sc.Arguments = "`"$((Resolve-Path 'claude_usage_tray.py').Path)`""; $sc.WorkingDirectory = $PWD.Path; $sc.Save(); Write-Host "Done — ClaudeUsageTray will start on next login."
 ```
-%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
-```
+
+To undo, delete `ClaudeUsageTray.lnk` from `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`.
