@@ -81,9 +81,7 @@ def config_dir() -> str:
         base = os.path.expanduser("~/Library/Application Support")
     else:
         base = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-    d = os.path.join(base, APP_NAME)
-    os.makedirs(d, exist_ok=True)
-    return d
+    return os.path.join(base, APP_NAME)
 
 
 def config_path() -> str:
@@ -93,10 +91,7 @@ def config_path() -> str:
 def load_config() -> dict:
     path = config_path()
     if not os.path.exists(path):
-        cfg = {"session_key": "", "org_id": ""}
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-        return cfg
+        return {"session_key": "", "org_id": ""}
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -105,7 +100,9 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    with open(config_path(), "w", encoding="utf-8") as f:
+    path = config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
 
@@ -189,8 +186,9 @@ def _pick_org(orgs):
     for o in orgs:
         caps = o.get("capabilities") or []
         if "chat" in caps:
-            return o.get("uuid")
-    return orgs[0].get("uuid")
+            return o.get("uuid"), o.get("name", "")
+    first = orgs[0]
+    return first.get("uuid"), first.get("name", "")
 
 
 class RateLimitedError(Exception):
@@ -220,10 +218,10 @@ def _http_get(url: str, headers: dict, timeout: int) -> dict:
 
 
 def fetch_usage(session_key: str, org_id: str = ""):
-    """Return (normalised_usage_dict, org_id). Raises on failure.
+    """Return (normalised_usage_dict, org_id, account_label). Raises on failure.
 
     OAuth tokens (sk-ant-oat01-, from Claude Code) use the Anthropic OAuth
-    usage endpoint. Session cookies (sk-ant-sid01-) use the claude.ai web API.
+    usage endpoint. Session cookies (sk-ant-sid01-/sid02-) use the claude.ai web API.
     """
     if session_key.startswith("sk-ant-oat"):
         headers = {
@@ -235,25 +233,28 @@ def fetch_usage(session_key: str, org_id: str = ""):
         data = _http_get(
             "https://api.anthropic.com/api/oauth/usage", headers, REQUEST_TIMEOUT
         )
+        account_label = "Claude Code"
     else:
         headers = {
             "Accept": "application/json",
             "User-Agent": USER_AGENT,
             "Cookie": f"sessionKey={session_key}",
         }
+        org_name = ""
         if not org_id:
             orgs = _http_get(f"{BASE}/organizations", headers, REQUEST_TIMEOUT)
-            org_id = _pick_org(orgs)
+            org_id, org_name = _pick_org(orgs)
         data = _http_get(
             f"{BASE}/organizations/{org_id}/usage", headers, REQUEST_TIMEOUT
         )
+        account_label = org_name or org_id[:8] + "…"
 
     usage = {
         "session": _extract(data.get("five_hour")),
         "weekly": _extract(data.get("seven_day")),
         "weekly_opus": _extract(data.get("seven_day_opus")),
     }
-    return usage, org_id
+    return usage, org_id, account_label
 
 
 class Fetcher(QtCore.QThread):
@@ -272,8 +273,8 @@ class Fetcher(QtCore.QThread):
             )
             return
         try:
-            usage, org_id = fetch_usage(self.session_key, self.org_id)
-            self.finished_result.emit({"ok": True, "usage": usage, "org_id": org_id})
+            usage, org_id, account_label = fetch_usage(self.session_key, self.org_id)
+            self.finished_result.emit({"ok": True, "usage": usage, "org_id": org_id, "account_label": account_label})
         except RateLimitedError as e:
             self.finished_result.emit({"ok": False, "error": str(e), "retry_after": e.retry_after})
         except Exception as e:  # noqa: BLE001
@@ -462,8 +463,13 @@ class Popup(QtWidgets.QWidget):
         title.setStyleSheet(
             f"color:{COLOR_TEXT}; font-size:14px; font-weight:700;"
         )
+        self.account_label = QtWidgets.QLabel("")
+        self.account_label.setStyleSheet(f"color:{COLOR_MUTED}; font-size:10px;")
+        self.account_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.account_label.hide()
         header.addWidget(title)
         header.addStretch(1)
+        header.addWidget(self.account_label)
         cl.addLayout(header)
 
         self.session_row = MetricRow("Session · 5-hour")
@@ -525,6 +531,13 @@ class Popup(QtWidgets.QWidget):
         self.connect_btn.setVisible(is_auth)
         self.updated.setText("Failed to update")
         self.adjustSize()
+
+    def set_account(self, label: str):
+        if label:
+            self.account_label.setText(label)
+            self.account_label.show()
+        else:
+            self.account_label.hide()
 
     def show_usage(self, usage, ts):
         self.error_label.hide()
@@ -588,6 +601,7 @@ class Controller(QtCore.QObject):
         self.fetcher = None
         self._rate_limited_until = 0
         self._last_manual_refresh = 0
+        self.account_name = ""
 
         self.popup = Popup(self.manual_refresh, self._open_auth_dialog)
         self.popup.hidden.connect(self._on_popup_hidden)
@@ -604,12 +618,8 @@ class Controller(QtCore.QObject):
                 QtCore.QUrl("https://claude.ai/settings/usage")
             )
         )
-        act_cfg = menu.addAction("Open config folder")
-        act_cfg.triggered.connect(
-            lambda: QtGui.QDesktopServices.openUrl(
-                QtCore.QUrl.fromLocalFile(config_dir())
-            )
-        )
+        act_switch = menu.addAction("Switch Account")
+        act_switch.triggered.connect(self._switch_account)
         menu.addSeparator()
         act_quit = menu.addAction("Quit")
         act_quit.triggered.connect(self.app.quit)
@@ -720,6 +730,8 @@ class Controller(QtCore.QObject):
                 self.org_id = new_org
                 self.cfg["org_id"] = new_org
                 save_config(self.cfg)
+            self.account_name = result.get("account_label", "")
+            self.popup.set_account(self.account_name)
             sess = self.usage.get("session")
             sess_pct = sess["pct"] if sess else 0
             self.tray.setIcon(make_ring_icon(sess_pct, loaded=True))
@@ -755,6 +767,30 @@ class Controller(QtCore.QObject):
             self.popup.refresh_updated_label()
             if self.usage:
                 self.popup.show_usage(self.usage, self.last_ts)
+
+    def _switch_account(self):
+        """Clear saved session key and prompt to connect a different account."""
+        self.cfg["session_key"] = ""
+        self.cfg["org_id"] = ""
+        save_config(self.cfg)
+        self.session_key, _org = get_session_key(self.cfg)
+        self.org_id = _org or ""
+        self.account_name = ""
+        self.usage = None
+        self.last_ts = 0
+        self._rate_limited_until = 0
+        self._last_manual_refresh = 0
+        self.tray.setIcon(make_ring_icon(0, loaded=False))
+        self.tray.setToolTip("Claude Usage — loading…")
+        self.popup.set_account("")
+        self.popup.hide()
+        # If Claude Code credentials are still present, just refresh with them
+        if self.session_key:
+            QtCore.QTimer.singleShot(200, self.refresh)
+        else:
+            dlg = ConnectDialog()
+            dlg.session_found.connect(self._on_session_from_browser)
+            dlg.exec()
 
     def _open_auth_dialog(self):
         self.popup.hide()
