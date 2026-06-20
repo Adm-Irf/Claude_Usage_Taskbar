@@ -14,7 +14,7 @@ Click the tray icon → a panel pops up with usage bars, percentages, and reset 
 2. Double-click it from anywhere (Downloads, Desktop, wherever) — it installs itself automatically.
 3. A ring icon appears in your system tray (bottom-right, expand the `^` if hidden).
 
-You can delete the downloaded file after running it — the app copies itself to the right place automatically.
+You can delete the downloaded file after running it — the app copies itself to `%LOCALAPPDATA%\Programs\ClaudeUsageTray\` automatically.
 
 ---
 
