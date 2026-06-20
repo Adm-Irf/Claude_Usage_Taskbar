@@ -39,6 +39,12 @@ import requests
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+try:
+    import winreg as _winreg
+except ImportError:
+    _winreg = None
+
+
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -211,6 +217,39 @@ class Fetcher(QtCore.QThread):
             self.finished_result.emit({"ok": True, "usage": usage, "org_id": org_id})
         except Exception as e:  # noqa: BLE001
             self.finished_result.emit({"ok": False, "error": str(e)})
+
+
+# --------------------------------------------------------------------------- #
+# Startup helpers (Windows only)
+# --------------------------------------------------------------------------- #
+_REG_RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_REG_NAME = "ClaudeUsageTray"
+
+
+def _startup_is_set() -> bool:
+    if _winreg is None or not sys.platform.startswith("win"):
+        return True
+    try:
+        k = _winreg.OpenKey(_winreg.HKEY_CURRENT_USER, _REG_RUN)
+        _winreg.QueryValueEx(k, _REG_NAME)
+        _winreg.CloseKey(k)
+        return True
+    except OSError:
+        return False
+
+
+def _startup_set() -> bool:
+    if _winreg is None or not sys.platform.startswith("win"):
+        return False
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        k = _winreg.OpenKey(_winreg.HKEY_CURRENT_USER, _REG_RUN, 0, _winreg.KEY_SET_VALUE)
+        _winreg.SetValueEx(k, _REG_NAME, 0, _winreg.REG_SZ, f'"{sys.executable}"')
+        _winreg.CloseKey(k)
+        return True
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -394,8 +433,31 @@ class Popup(QtWidgets.QWidget):
         footer.addWidget(refresh)
         cl.addLayout(footer)
 
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #2f343c;")
+        cl.addWidget(sep)
+        self.startup_btn = QtWidgets.QPushButton("Start automatically on Windows login")
+        self.startup_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.startup_btn.setStyleSheet(
+            "QPushButton{color:%s; background:#2a2d34; border:none; border-radius:6px;"
+            " font-size:11px; font-weight:600; padding:6px 10px;}"
+            "QPushButton:hover{background:#31363f; color:%s;}" % (COLOR_MUTED, COLOR_OK)
+        )
+        self.startup_btn.clicked.connect(self._on_startup_clicked)
+        self.startup_btn.hide()
+        sep.hide()
+        self._startup_sep = sep
+        cl.addWidget(self.startup_btn)
+
         self.setFixedWidth(300)
         self._last_ts = 0
+
+    def _on_startup_clicked(self):
+        if _startup_set():
+            self.startup_btn.hide()
+            self._startup_sep.hide()
+            self.adjustSize()
 
     def hideEvent(self, e):
         self.hidden.emit()
@@ -421,6 +483,9 @@ class Popup(QtWidgets.QWidget):
             self.opus_row.update_metric(opus)
         self._last_ts = ts
         self.refresh_updated_label()
+        if not _startup_is_set():
+            self._startup_sep.show()
+            self.startup_btn.show()
         self.adjustSize()
 
     def refresh_updated_label(self):
