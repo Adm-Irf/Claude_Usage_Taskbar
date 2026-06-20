@@ -819,7 +819,6 @@ class SetupDialog(QtWidgets.QDialog):
         super().__init__()
         self.original_exe = original_exe
         self.install_exe = install_exe
-        self._fetcher = None
 
         self.setWindowTitle("Claude Usage Tray — Setup")
         self.setWindowFlag(QtCore.Qt.WindowType.WindowContextHelpButtonHint, False)
@@ -843,11 +842,6 @@ class SetupDialog(QtWidgets.QDialog):
         self.path_label.setStyleSheet(f"color:{COLOR_MUTED}; font-size:10px;")
         self.path_label.hide()
         lay.addWidget(self.path_label)
-
-        self.step2 = QtWidgets.QLabel("Connecting to claude.ai…")
-        self.step2.setStyleSheet(f"color:{COLOR_MUTED}; font-size:12px;")
-        self.step2.hide()
-        lay.addWidget(self.step2)
 
         self.cleanup_label = QtWidgets.QLabel("")
         self.cleanup_label.setWordWrap(True)
@@ -878,28 +872,11 @@ class SetupDialog(QtWidgets.QDialog):
         self.step1.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
         self.path_label.setText(f"Stored at:  {install_dir}")
         self.path_label.show()
-        self.step2.show()
-        self.adjustSize()
-        QtCore.QTimer.singleShot(80, self._do_connect)
-
-    def _do_connect(self):
-        key, org_id = get_session_key({})
-        self._fetcher = Fetcher(key or "", org_id or "")
-        self._fetcher.finished_result.connect(self._on_fetched)
-        self._fetcher.start()
-
-    def _on_fetched(self, result):
-        if result.get("ok"):
-            self.step2.setText("✓  Connected to claude.ai")
-            self.step2.setStyleSheet(f"color:{COLOR_OK}; font-size:12px; font-weight:600;")
-        else:
-            self.step2.setText("⚠  Could not connect — will retry in background")
-            self.step2.setStyleSheet(f"color:{COLOR_WARN}; font-size:12px;")
-        subprocess.Popen([self.install_exe])
         self.cleanup_label.setText(
-            f"Setup complete. You can delete the downloaded file:\n{self.original_exe}"
+            f"You can now delete the downloaded file:\n{self.original_exe}"
         )
         self.cleanup_label.show()
+        subprocess.Popen([self.install_exe])
         self.done_btn.show()
         self.adjustSize()
 
