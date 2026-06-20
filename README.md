@@ -10,6 +10,8 @@ Click the tray icon → a panel pops up with usage bars, percentages, and reset 
 
 ## Download & Install
 
+**No installation required** — the exe bundles everything (Python runtime, all libraries). Just download and run.
+
 1. Go to the [**Releases**](../../releases/latest) page and download `ClaudeUsageTray.exe`.
 2. Double-click it from anywhere (Downloads, Desktop, wherever).
 3. A setup window appears — it installs itself to `%LOCALAPPDATA%\Programs\ClaudeUsageTray\`, connects to your Claude account, and shows you the path of the downloaded file.
@@ -74,9 +76,11 @@ Handled automatically. The first time the app successfully connects to your Clau
 
 ---
 
-## Build from source
+## Build from source (developers only)
 
-Requires Python 3.8+.
+Regular users do not need this — just download the exe from Releases.
+
+Requires Python 3.10+.
 
 ```bash
 pip install -r requirements.txt

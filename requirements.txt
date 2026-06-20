@@ -1,3 +1,2 @@
 PySide6>=6.6
-requests>=2.31
 browser-cookie3>=0.19
