@@ -11,8 +11,10 @@ Click the tray icon → a panel pops up with usage bars, percentages, and reset 
 ## Download & Run
 
 1. Go to the [**Releases**](../../releases/latest) page and download `ClaudeUsageTray.exe`.
-2. Double-click the exe — it needs no installation, just run it.
+2. Double-click it from anywhere (Downloads, Desktop, wherever) — it installs itself automatically.
 3. A ring icon appears in your system tray (bottom-right, expand the `^` if hidden).
+
+You can delete the downloaded file after running it — the app copies itself to the right place automatically.
 
 ---
 
