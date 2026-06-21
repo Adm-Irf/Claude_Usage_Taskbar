@@ -111,7 +111,7 @@ If your antivirus quarantines or blocks the exe, you can run the app directly fr
 Open **PowerShell** (Win + R → type `powershell` → Enter) and run:
 
 ```
-git clone https://github.com/Adm-irf/Claude-Usage-Tray.git
+git clone https://github.com/Adm-Irf/Claude_Usage_Taskbar.git
 cd Claude-Usage-Tray
 ```
 
