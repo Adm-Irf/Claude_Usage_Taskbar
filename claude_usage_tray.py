@@ -11,6 +11,7 @@ Authentication (automatic, no setup needed):
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -67,6 +68,25 @@ def _read_claude_code_credentials():
     except Exception:
         pass
     return None, None
+
+
+def _refresh_claude_code_token() -> bool:
+    """Run 'claude --version' silently so Claude Code auto-refreshes its OAuth token."""
+    claude_path = shutil.which("claude") or shutil.which("claude.cmd")
+    if not claude_path:
+        return False
+    try:
+        flags = 0x08000000 if sys.platform.startswith("win") else 0  # CREATE_NO_WINDOW
+        subprocess.run(
+            [claude_path, "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            creationflags=flags,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _read_browser_cookie():
@@ -213,8 +233,20 @@ class Fetcher(QtCore.QThread):
         except RateLimitedError as e:
             self.finished_result.emit({"ok": False, "error": str(e), "retry_after": e.retry_after})
         except Exception as e:
-            # Claude Code token expired (401) — fall back to browser cookie
+            # Claude Code token expired (401) — try to refresh it, then fall back to browser cookie
             if self.token.startswith("sk-ant-oat") and "Not authorised" in str(e):
+                # Step 1: ask claude CLI to refresh the OAuth token automatically
+                if _refresh_claude_code_token():
+                    time.sleep(2)  # wait for credentials file to be rewritten
+                    new_token, new_org = _read_claude_code_credentials()
+                    if new_token and new_token != self.token:
+                        try:
+                            usage, org_id, account_label = fetch_usage(new_token, self.org_id or new_org)
+                            self.finished_result.emit({"ok": True, "usage": usage, "org_id": org_id, "account_label": account_label})
+                            return
+                        except Exception:
+                            pass
+                # Step 2: fall back to browser cookie
                 cookie = _read_browser_cookie()
                 if cookie:
                     try:
