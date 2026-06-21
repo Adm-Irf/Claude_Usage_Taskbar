@@ -112,14 +112,14 @@ Open **PowerShell** (Win + R → type `powershell` → Enter) and run:
 
 ```
 git clone https://github.com/Adm-Irf/Claude_Usage_Taskbar.git
-cd Claude-Usage-Tray
+cd Claude_Usage_Taskbar
 ```
 
 Or click the green **Code** button on GitHub → **Download ZIP**, extract it, then `cd` into the folder.
 
 **2. Install dependencies**
 
-In the same PowerShell window (inside the `Claude-Usage-Tray` folder):
+In the same PowerShell window (inside the `Claude_Usage_Taskbar` folder):
 
 ```
 pip install -r requirements.txt
@@ -135,7 +135,7 @@ The tray icon appears and PowerShell can be closed — the app keeps running ind
 
 **4. Make it start on login**
 
-Paste this into the same PowerShell window (must be inside the `Claude-Usage-Tray` folder):
+Paste this into the same PowerShell window (must be inside the `Claude_Usage_Taskbar` folder):
 
 ```powershell
 $ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\ClaudeUsageTray.lnk"); $sc.TargetPath = (Get-Command pythonw).Source; $sc.Arguments = "`"$((Resolve-Path 'claude_usage_tray.py').Path)`""; $sc.WorkingDirectory = $PWD.Path; $sc.Save(); Write-Host "Done — ClaudeUsageTray will start on next login."
