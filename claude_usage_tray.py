@@ -213,6 +213,20 @@ class Fetcher(QtCore.QThread):
         except RateLimitedError as e:
             self.finished_result.emit({"ok": False, "error": str(e), "retry_after": e.retry_after})
         except Exception as e:
+            # Claude Code token expired (401) — fall back to browser cookie
+            if self.token.startswith("sk-ant-oat") and "Not authorised" in str(e):
+                cookie = _read_browser_cookie()
+                if cookie:
+                    try:
+                        usage, org_id, account_label = fetch_usage(cookie, "")
+                        self.finished_result.emit({"ok": True, "usage": usage, "org_id": org_id, "account_label": account_label})
+                        return
+                    except RateLimitedError as e2:
+                        self.finished_result.emit({"ok": False, "error": str(e2), "retry_after": e2.retry_after})
+                        return
+                    except Exception as e2:
+                        self.finished_result.emit({"ok": False, "error": str(e2)})
+                        return
             self.finished_result.emit({"ok": False, "error": str(e)})
 
 
